@@ -1,0 +1,9 @@
+[mysqld]
+# Enable the binary log and set the base name
+log-bin=mysql-bin
+# Assign a unique server ID (essential for replication)
+server-id=1
+# Set the binary log format to ROW (recommended for reliable replication)
+binlog-format=ROW
+# Optional: Set binlog expiration time in seconds (e.g., 1 week)
+binlog-expire-logs-seconds=604800 

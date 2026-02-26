@@ -1,0 +1,15 @@
+[Unit]
+Description=Qlik DMG Container Initialization
+After=network.target
+After=sshd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/qlik-dmg.env
+ExecStart=/entrypoint.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

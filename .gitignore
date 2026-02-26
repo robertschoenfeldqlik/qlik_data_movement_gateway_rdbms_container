@@ -1,0 +1,5 @@
+# Qlik Gateway RPM files (user must supply their own)
+rpmfiles/*.rpm
+
+# Claude Code settings
+.claude/
