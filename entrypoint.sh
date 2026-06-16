@@ -107,11 +107,38 @@ if [ "$POSTGRES_ALREADY_INITIALIZED" = "false" ]; then
     PG_CONF="/var/lib/pgsql/15/data/postgresql.conf"
     echo "host    all             all             0.0.0.0/0               md5" >> "$PG_HBA"
     sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" "$PG_CONF"
+    # Enable logical decoding so the Data Movement gateway can do log-based CDC.
+    echo "wal_level = logical"        >> "$PG_CONF"
+    echo "max_replication_slots = 10" >> "$PG_CONF"
+    echo "max_wal_senders = 10"       >> "$PG_CONF"
     systemctl restart postgresql-15
-    echo "    Remote connections enabled."
+    echo "    Remote connections + logical WAL enabled."
+
+    echo "==> [PostgreSQL] Creating mcg_wms database..."
+    until /usr/pgsql-15/bin/pg_isready -q -h /var/run/postgresql 2>/dev/null; do sleep 1; done
+    runuser -u postgres -- /usr/pgsql-15/bin/psql -c "CREATE DATABASE mcg_wms;"
+    echo "    mcg_wms database created."
 else
     echo "==> [PostgreSQL] Skipping password set - already configured."
+    # Ensure mcg_wms database exists even on subsequent boots
+    if ! runuser -u postgres -- /usr/pgsql-15/bin/psql -lqt | grep -qw mcg_wms; then
+        echo "==> [PostgreSQL] Creating missing mcg_wms database..."
+        runuser -u postgres -- /usr/pgsql-15/bin/psql -c "CREATE DATABASE mcg_wms;"
+        echo "    mcg_wms database created."
+    fi
 fi
+
+# Ensure the mcg_admin login role exists (matches the documented WMS credentials in
+# the deploy config and demo docs). Idempotent — runs on every boot. Superuser so it
+# covers reads, writes, and log-based CDC (replication slots / publications).
+echo "==> [PostgreSQL] Ensuring mcg_admin role..."
+MCG_ADMIN_PW="${MCG_ADMIN_PASSWORD:-mcg_demo_2025}"
+if runuser -u postgres -- /usr/pgsql-15/bin/psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='mcg_admin'" | grep -q 1; then
+    runuser -u postgres -- /usr/pgsql-15/bin/psql -c "ALTER ROLE mcg_admin WITH LOGIN SUPERUSER REPLICATION PASSWORD '${MCG_ADMIN_PW}';"
+else
+    runuser -u postgres -- /usr/pgsql-15/bin/psql -c "CREATE ROLE mcg_admin WITH LOGIN SUPERUSER REPLICATION PASSWORD '${MCG_ADMIN_PW}';"
+fi
+echo "    mcg_admin role ensured (superuser + replication)."
 
 # =============================================================================
 # SQL Server 2022 Initialization
