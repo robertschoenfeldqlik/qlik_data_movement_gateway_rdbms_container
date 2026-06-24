@@ -1,0 +1,6 @@
+# Normalize build-context sources to LF so a Windows checkout never injects
+# Windows CRLF into the Linux container image — systemd unit files and shell
+# scripts fail to run inside the container when they carry carriage returns.
+*.sh        text eol=lf
+*.service   text eol=lf
+Dockerfile  text eol=lf

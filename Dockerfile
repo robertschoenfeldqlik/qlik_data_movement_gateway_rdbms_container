@@ -146,7 +146,8 @@ cat /proc/1/environ | tr '\0' '\n' | \
     > /etc/qlik-dmg.env
 chmod 600 /etc/qlik-dmg.env
 SCRIPT
-RUN chmod +x /usr/local/bin/dump-env.sh
+RUN chmod +x /usr/local/bin/dump-env.sh && \
+    sed -i 's/\r$//' /usr/local/bin/dump-env.sh
 
 RUN cat > /etc/systemd/system/qlik-dmg-env.service << 'EOF'
 [Unit]
@@ -165,6 +166,8 @@ WantedBy=multi-user.target
 EOF
 
 COPY qlik-dmg-init.service /etc/systemd/system/qlik-dmg-init.service
+RUN sed -i 's/\r$//' /etc/systemd/system/qlik-dmg-init.service \
+                      /etc/systemd/system/qlik-dmg-env.service
 
 RUN systemctl enable qlik-dmg-env.service && \
     systemctl enable qlik-dmg-init.service
@@ -173,7 +176,7 @@ RUN systemctl enable qlik-dmg-env.service && \
 # Entrypoint script
 # -----------------------------------------------------------------------------
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 # -----------------------------------------------------------------------------
 # Environment Variables
