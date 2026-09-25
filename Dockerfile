@@ -93,8 +93,13 @@ RUN yum install -y \
         https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm && \
     yum clean all
 
-RUN yum install -y --nogpgcheck \
-        mysql-server \
+# Oracle Linux 9's appstream now ships mysql-server at the same 8.0.46 as the
+# community repo added above, so a bare `mysql-server` pulls both and the build
+# dies on hundreds of file conflicts. Disabling the appstream module leaves the
+# community repo as the only provider, which is MySQL's documented EL9 install.
+RUN yum -y module disable mysql && \
+    yum install -y --nogpgcheck \
+        mysql-community-server \
         mysql-connector-odbc \
     && yum clean all
 
