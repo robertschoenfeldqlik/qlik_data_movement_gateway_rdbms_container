@@ -2,7 +2,7 @@
 # Qlik Data Movement Gateway - Docker Image
 # Base OS: Oracle Linux 9
 # Includes:
-#   - MySQL Server 8.0     (password: Qlik1234)
+#   - MySQL Server 8.0     (password: Qlik1234) - churn + crm demo databases
 #   - PostgreSQL Server 15 (password: Qlik1234)
 #   - SQL Server 2022      (password: Qlik1234)  <-- requires special char
 #   - Qlik Data Movement Gateway
@@ -84,7 +84,8 @@ RUN yum -y install systemd systemd-sysv && \
 RUN useradd -m qlikdmg && \
     echo 'qlikdmg:Qlik1234' | chpasswd
 
-RUN ssh-keygen -A
+RUN ssh-keygen -A && \
+    systemctl enable sshd
 
 # -----------------------------------------------------------------------------
 # Step 6: MySQL Server 8.0 + ODBC Driver
@@ -108,6 +109,7 @@ RUN mkdir -p /etc/mysql/conf.d && \
 
 COPY custom.cnf /etc/mysql/conf.d/custom.cnf
 COPY churn-dump.sql /docker-entrypoint-initdb.d/churn-dump.sql
+COPY crm-dump.sql /docker-entrypoint-initdb.d/crm-dump.sql
 
 # -----------------------------------------------------------------------------
 # Step 7: PostgreSQL 15 Server + ODBC Driver
@@ -174,8 +176,11 @@ COPY qlik-dmg-init.service /etc/systemd/system/qlik-dmg-init.service
 RUN sed -i 's/\r$//' /etc/systemd/system/qlik-dmg-init.service \
                       /etc/systemd/system/qlik-dmg-env.service
 
+# systemd-user-sessions removes /run/nologin once boot completes. Step 4 strips
+# its multi-user.target link, which leaves pam_nologin refusing every SSH login.
 RUN systemctl enable qlik-dmg-env.service && \
-    systemctl enable qlik-dmg-init.service
+    systemctl enable qlik-dmg-init.service && \
+    systemctl add-wants multi-user.target systemd-user-sessions.service
 
 # -----------------------------------------------------------------------------
 # Entrypoint script

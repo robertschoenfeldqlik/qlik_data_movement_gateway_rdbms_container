@@ -1,12 +1,22 @@
 # =============================================================================
-# Qlik Data Movement Gateway - Docker Deployment Script
+# Qlik Data Movement Gateway - Docker / Podman Deployment Script
 # Run this script from the directory containing your Dockerfile
-# Usage: .\deploy-qlik-dmg.ps1
+# Usage: .\deploy-qlik-dmg.ps1                  (Docker Desktop)
+#        .\deploy-qlik-dmg.ps1 -Engine podman   (Podman machine)
 # =============================================================================
+param(
+    [ValidateSet("docker", "podman")]
+    [string]$Engine = "docker"
+)
 
 # -- Configuration -------------------------------------------------------------
+$Engine         = $Engine.ToLower()
+$EngineLabel    = if ($Engine -eq "podman") { "Podman" } else { "Docker" }
 $ImageName      = "qlik-dmg"
 $ImageTag       = "latest"
+# Podman stores locally built images under localhost/ - reference it explicitly so
+# a same-named image pulled or built elsewhere (docker.io/library/...) never wins.
+$ImageRef       = if ($Engine -eq "podman") { "localhost/${ImageName}:${ImageTag}" } else { "${ImageName}:${ImageTag}" }
 $ContainerName  = "qlik-dmg"
 $MysqlVolume    = "qlik-mysql-data"
 $ScriptDir      = $PSScriptRoot
@@ -38,15 +48,35 @@ function Write-Fail {
 # -- Preflight Checks ----------------------------------------------------------
 Write-Step "Running preflight checks..."
 
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    Write-Fail "Docker is not installed or not in PATH. Please install Docker Desktop."
-}
+Write-Host "    Container engine: $EngineLabel" -ForegroundColor DarkGray
 
-docker info > $null 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "Docker Desktop is not running. Please start Docker Desktop and try again."
+if ($Engine -eq "podman") {
+    if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
+        Write-Fail "Podman is not installed or not in PATH. Please install Podman (podman.io)."
+    }
+
+    podman info > $null 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Podman is not reachable. Start the Podman machine (podman machine start) and try again."
+    }
+
+    # systemd as PID 1 + ports 22/80/443 were validated on a rootful Podman machine
+    if ((podman info --format "{{.Host.Security.Rootless}}") -eq "true") {
+        Write-Host "    WARNING: Podman is running rootless. This container is validated on a rootful machine." -ForegroundColor Yellow
+        Write-Host "             If the run fails: podman machine stop; podman machine set --rootful; podman machine start" -ForegroundColor Yellow
+    }
+    Write-Success "Podman is running."
+} else {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        Write-Fail "Docker is not installed or not in PATH. Please install Docker Desktop."
+    }
+
+    docker info > $null 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Docker Desktop is not running. Please start Docker Desktop and try again."
+    }
+    Write-Success "Docker is running."
 }
-Write-Success "Docker is running."
 
 if (-not (Test-Path ".\Dockerfile")) {
     Write-Fail "Dockerfile not found in the current directory: $(Get-Location)"
@@ -188,32 +218,32 @@ foreach ($rule in $FirewallPorts) {
 # -- Remove Existing Container -------------------------------------------------
 Write-Step "Checking for existing container named '$ContainerName'..."
 
-$existing = docker ps -aq --filter "name=^${ContainerName}$"
+$existing = & $Engine ps -aq --filter "name=^${ContainerName}$"
 if ($existing) {
     Write-Host "    Found existing container. Stopping and removing..." -ForegroundColor Yellow
-    docker stop $ContainerName | Out-Null
-    docker rm $ContainerName | Out-Null
+    & $Engine stop $ContainerName | Out-Null
+    & $Engine rm $ContainerName | Out-Null
     Write-Success "Existing container removed."
 } else {
     Write-Success "No existing container found."
 }
 
 # -- Build Image ---------------------------------------------------------------
-Write-Step "Building Docker image '${ImageName}:${ImageTag}'..."
+Write-Step "Building $EngineLabel image '${ImageName}:${ImageTag}'..."
 
-docker build -t "${ImageName}:${ImageTag}" .
+& $Engine build -t "${ImageName}:${ImageTag}" .
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Fail "Docker build failed. Check the output above for errors."
+    Write-Fail "$EngineLabel build failed. Check the output above for errors."
 }
 Write-Success "Image built successfully."
 
 # -- Create Named Volume -------------------------------------------------------
 Write-Step "Ensuring MySQL data volume '$MysqlVolume' exists..."
 
-$volumeExists = docker volume ls --filter "name=^${MysqlVolume}$" --format "{{.Name}}"
+$volumeExists = & $Engine volume ls --filter "name=^${MysqlVolume}$" --format "{{.Name}}"
 if (-not $volumeExists) {
-    docker volume create $MysqlVolume | Out-Null
+    & $Engine volume create $MysqlVolume | Out-Null
     Write-Success "Volume '$MysqlVolume' created."
 } else {
     Write-Success "Volume '$MysqlVolume' already exists - existing MySQL data will be preserved."
@@ -223,10 +253,13 @@ if (-not $volumeExists) {
 Write-Step "Starting container '$ContainerName'..."
 Write-Host "    NOTE: --memory=4g is required for SQL Server 2022 to start." -ForegroundColor DarkGray
 
-docker run -d `
+# systemd is PID 1: Docker needs the host cgroup namespace; Podman runs systemd natively
+$SystemdArgs = if ($Engine -eq "podman") { @("--systemd=always") } else { @("--cgroupns=host") }
+
+& $Engine run -d `
     --name $ContainerName `
     --privileged `
-    --cgroupns=host `
+    @SystemdArgs `
     --memory=4g `
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw `
     -v ${MysqlVolume}:/var/lib/mysql `
@@ -241,7 +274,7 @@ docker run -d `
     -p 8080:8080 `
     -p 8088:8088 `
     -p 8686:8686 `
-    "${ImageName}:${ImageTag}"
+    $ImageRef
 
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "Failed to start container. Check the output above for errors."
@@ -250,34 +283,37 @@ Write-Success "Container '$ContainerName' started successfully."
 
 # -- Status Summary ------------------------------------------------------------
 Write-Step "Deployment complete. Container status:"
-docker ps --filter "name=^${ContainerName}$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+& $Engine ps --filter "name=^${ContainerName}$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
 Write-Host ""
 Write-Host "-- Initialization Logs -----------------------------------------------" -ForegroundColor DarkGray
 Write-Host "  Streaming container initialization logs (Ctrl+C to stop)..." -ForegroundColor Yellow
 Write-Host ""
-docker exec -it $ContainerName journalctl -u qlik-dmg-init.service -f
+& $Engine exec -it $ContainerName journalctl -u qlik-dmg-init.service -f
 
 Write-Host ""
 Write-Host "-- Connection Details -----------------------------------------------" -ForegroundColor DarkGray
-Write-Host "  MySQL        : localhost:3306  (root / Qlik1234)" -ForegroundColor DarkGray
-Write-Host "  PostgreSQL   : localhost:5432  (postgres / Qlik1234)" -ForegroundColor DarkGray
-Write-Host "  SQL Server   : localhost:1433  (sa / Qlik1234!)" -ForegroundColor DarkGray
+# Podman's WSL port relay listens on IPv4 only, and "localhost" can resolve to ::1
+$DbHost = if ($Engine -eq "podman") { "127.0.0.1" } else { "localhost" }
+Write-Host "  MySQL        : ${DbHost}:3306  (root / Qlik1234)  databases: churn, crm" -ForegroundColor DarkGray
+Write-Host "  PostgreSQL   : ${DbHost}:5432  (postgres / Qlik1234)" -ForegroundColor DarkGray
+Write-Host "  SQL Server   : ${DbHost}:1433  (sa / Qlik1234!)" -ForegroundColor DarkGray
+Write-Host "  SSH          : ${DbHost}:22    (qlikdmg / Qlik1234)" -ForegroundColor DarkGray
 Write-Host "  Qlik Tenant  : $TenantUrl" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "-- Useful Commands --------------------------------------------------" -ForegroundColor DarkGray
-Write-Host "  Tail logs:        docker logs -f $ContainerName" -ForegroundColor DarkGray
-Write-Host "  Open shell:       docker exec -it $ContainerName /bin/bash" -ForegroundColor DarkGray
-Write-Host "  MSSQL logs:       docker exec -it $ContainerName journalctl -u mssql-server -f" -ForegroundColor DarkGray
-Write-Host "  Fix repagent:     docker exec -it $ContainerName bash -c `"mkdir -p /etc/systemd/system/repagent.service.d && cat > /etc/systemd/system/repagent.service.d/override.conf << 'EOF'" -ForegroundColor DarkGray
+Write-Host "  Tail logs:        $Engine logs -f $ContainerName" -ForegroundColor DarkGray
+Write-Host "  Open shell:       $Engine exec -it $ContainerName /bin/bash" -ForegroundColor DarkGray
+Write-Host "  MSSQL logs:       $Engine exec -it $ContainerName journalctl -u mssql-server -f" -ForegroundColor DarkGray
+Write-Host "  Fix repagent:     $Engine exec -it $ContainerName bash -c `"mkdir -p /etc/systemd/system/repagent.service.d && cat > /etc/systemd/system/repagent.service.d/override.conf << 'EOF'" -ForegroundColor DarkGray
 Write-Host "                    [Service]" -ForegroundColor DarkGray
 Write-Host "                    PIDFile=" -ForegroundColor DarkGray
 Write-Host "                    Type=forking" -ForegroundColor DarkGray
 Write-Host "                    TimeoutStartSec=120" -ForegroundColor DarkGray
 Write-Host "                    EOF" -ForegroundColor DarkGray
 Write-Host "                    systemctl daemon-reload && systemctl restart repagent`"" -ForegroundColor DarkGray
-Write-Host "  Stop container:   docker stop $ContainerName" -ForegroundColor DarkGray
-Write-Host "  Remove container: docker rm $ContainerName" -ForegroundColor DarkGray
-Write-Host "  Remove volume:    docker volume rm $MysqlVolume" -ForegroundColor DarkGray
+Write-Host "  Stop container:   $Engine stop $ContainerName" -ForegroundColor DarkGray
+Write-Host "  Remove container: $Engine rm $ContainerName" -ForegroundColor DarkGray
+Write-Host "  Remove volume:    $Engine volume rm $MysqlVolume" -ForegroundColor DarkGray
 Write-Host "---------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""

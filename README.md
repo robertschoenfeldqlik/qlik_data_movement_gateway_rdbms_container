@@ -12,11 +12,18 @@ A single Docker container running the **Qlik Data Movement Gateway** alongside t
 | Qlik Data Movement Gateway | Latest | 3552, 8080, 8088, 8686 | — |
 | SSH | — | 22 | `qlikdmg` / `Qlik1234` |
 
-MySQL is preconfigured with binary logging enabled (ROW format) for CDC replication and comes preloaded with a sample **churn** dataset.
+MySQL is preconfigured with binary logging enabled (ROW format) for CDC replication and comes preloaded with two sample databases:
+
+| Database | Tables |
+|----------|--------|
+| `churn` | `demographics`, `service_data`, `subscriptions`, `usage_data` |
+| `crm` | `account` (3,160), `contact` (3,160), `opportunity` (4,566), `user` (25) |
+
+`crm.account.ACCOUNT_NUMBER` is the churn `AccountID`, so the CRM rows join to the churn customer base. The `crm` database is loaded on first boot, and on any later boot where it is missing, so existing MySQL volumes pick it up too.
 
 ## Prerequisites
 
-- **Docker Desktop** (Windows/Mac) or **Docker Engine** (Linux) with at least **4 GB** of memory allocated
+- **Docker Desktop** (Windows/Mac), **Docker Engine** (Linux), or **Podman** (rootful machine on Windows/Mac, `sudo podman` on Linux) with at least **4 GB** of memory allocated
 - **Qlik Cloud tenant** — you'll need your tenant URL (e.g., `your-tenant.us.qlikcloud.com`)
 - **Qlik Data Movement Gateway RPM** — see [Downloading the Gateway RPM](#downloading-the-gateway-rpm) below
 
@@ -56,13 +63,43 @@ chmod +x deploy-qlik-dmg.sh
 ./deploy-qlik-dmg.sh
 ```
 
+### Podman
+
+Both scripts take an engine option; Docker stays the default.
+
+```powershell
+# Windows
+.\deploy-qlik-dmg.ps1 -Engine podman
+```
+
+```bash
+# Mac / Linux
+./deploy-qlik-dmg.sh --engine podman
+# or
+CONTAINER_ENGINE=podman ./deploy-qlik-dmg.sh
+```
+
+On Windows and Mac the Podman machine must be **rootful** (systemd as PID 1 and ports 22/80/443 are validated that way):
+
+```bash
+podman machine init --rootful --now          # new machine
+# or, for an existing machine:
+podman machine stop
+podman machine set --rootful
+podman machine start
+```
+
+With Podman the image is built as `localhost/qlik-dmg:latest` and run with `--systemd=always` in place of Docker's `--cgroupns=host`; everything else (ports, volume, memory, env vars) is identical.
+
+> **Windows + Podman:** connect to `127.0.0.1`, not `localhost`. The Podman (WSL) port relay listens on IPv4 only, and `localhost` can resolve to `::1`, which fails with "Connection refused" (e.g. `ssh qlikdmg@127.0.0.1`).
+
 Both scripts will:
 
-1. Validate Docker is running and the Dockerfile is present
+1. Validate Docker (or Podman) is running and the Dockerfile is present
 2. Prompt for the Gateway RPM (or use an existing one in `rpmfiles/`)
 3. Prompt for your Qlik Cloud tenant URL
 4. Configure host firewall rules for the required ports
-5. Build the Docker image
+5. Build the container image
 6. Create a named volume for MySQL data persistence
 7. Start the container and stream initialization logs
 8. Display connection details and a gateway registration token
@@ -91,6 +128,29 @@ docker run -d \
 ```
 
 > **Note:** `--privileged` and `--cgroupns=host` are required because systemd runs as PID 1 inside the container. `--memory=4g` is required for SQL Server 2022 to start.
+
+### Podman
+
+```bash
+# Build
+podman build -t qlik-dmg:latest .
+
+# Run
+podman run -d \
+  --name qlik-dmg \
+  --privileged \
+  --systemd=always \
+  --memory=4g \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+  -v qlik-mysql-data:/var/lib/mysql \
+  -e TENANT_URL="your-tenant.us.qlikcloud.com" \
+  -p 22:22 -p 80:80 -p 443:443 \
+  -p 3306:3306 -p 5432:5432 -p 1433:1433 \
+  -p 3552:3552 -p 8080:8080 -p 8088:8088 -p 8686:8686 \
+  localhost/qlik-dmg:latest
+```
+
+Every `docker` command in the sections below works the same with `podman`.
 
 ## Exposed Ports
 
@@ -195,12 +255,13 @@ Systemd is PID 1. Docker environment variables are captured via `/proc/1/environ
 ```
 .
 ├── Dockerfile               # Image definition (Oracle Linux 9 + systemd)
-├── deploy-qlik-dmg.sh       # Deployment script (Mac/Linux)
-├── deploy-qlik-dmg.ps1      # Deployment script (Windows)
+├── deploy-qlik-dmg.sh       # Deployment script (Mac/Linux, --engine docker|podman)
+├── deploy-qlik-dmg.ps1      # Deployment script (Windows, -Engine docker|podman)
 ├── entrypoint.sh            # Container initialization (called by systemd)
 ├── qlik-dmg-init.service    # Systemd service unit for initialization
 ├── custom.cnf               # MySQL config (enables binary log for CDC)
-├── churn-dump.sql           # Sample MySQL dataset
+├── churn-dump.sql           # Sample MySQL dataset (churn database)
+├── crm-dump.sql             # Sample MySQL dataset (crm database)
 ├── rpmfiles/
 │   └── gateway.rpm          # <-- Place the Qlik Gateway RPM here
 └── README.md

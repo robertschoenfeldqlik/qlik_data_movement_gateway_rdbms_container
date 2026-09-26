@@ -74,6 +74,21 @@ else
     echo "==> [MySQL] Skipping password set and data load - already configured."
 fi
 
+# CRM demo database (crm.account / contact / opportunity / user). Loaded whenever
+# the crm schema is missing, so volumes initialized before it existed get it too.
+if mysql -u root -p"${MYSQL_ROOT_PASSWORD}" --protocol=socket -N \
+        -e "SHOW DATABASES LIKE 'crm';" 2>/dev/null | grep -qx crm; then
+    echo "==> [MySQL] crm database already present - skipping load."
+else
+    echo "==> [MySQL] Loading crm demo dataset..."
+    if mysql -u root -p"${MYSQL_ROOT_PASSWORD}" --protocol=socket \
+        < /docker-entrypoint-initdb.d/crm-dump.sql; then
+        echo "    crm dataset loaded."
+    else
+        echo "    ERROR: crm dataset load failed - check the output above."
+    fi
+fi
+
 # =============================================================================
 # PostgreSQL 15 Initialization
 # =============================================================================
@@ -204,11 +219,13 @@ if [ -d "/opt/qlik/gateway/movement/bin" ]; then
 
     echo ""
     echo "==> [Drivers] Installing MySQL, Snowflake, and MSSQL drivers..."
-    echo "    (License agreements auto-accepted via ACCEPT_EULA=Y)"
+    echo "    (License agreements auto-accepted via install -a; logs in /var/log/qlik-drivers-*.log)"
     cd /opt/qlik/gateway/movement/drivers/bin/
-    ACCEPT_EULA=Y ./install mysql    > /dev/null 2>&1 && echo "    [OK] MySQL driver installed"    || echo "    [WARN] MySQL driver install returned non-zero"
-    ACCEPT_EULA=Y ./install snowflake > /dev/null 2>&1 && echo "    [OK] Snowflake driver installed" || echo "    [WARN] Snowflake driver install returned non-zero"
-    ACCEPT_EULA=Y ./install mssql    > /dev/null 2>&1 && echo "    [OK] MSSQL driver installed"    || echo "    [WARN] MSSQL driver install returned non-zero"
+    # The installer only accepts the license with -a (it ignores ACCEPT_EULA) and
+    # the SQL Server manifest is named "sqlserver" (see ../manifests/*.yaml).
+    ACCEPT_EULA=Y ./install -a mysql     > /var/log/qlik-drivers-mysql.log 2>&1     && echo "    [OK] MySQL driver installed"     || echo "    [WARN] MySQL driver install returned non-zero - see /var/log/qlik-drivers-mysql.log"
+    ACCEPT_EULA=Y ./install -a snowflake > /var/log/qlik-drivers-snowflake.log 2>&1 && echo "    [OK] Snowflake driver installed" || echo "    [WARN] Snowflake driver install returned non-zero - see /var/log/qlik-drivers-snowflake.log"
+    ACCEPT_EULA=Y ./install -a sqlserver > /var/log/qlik-drivers-sqlserver.log 2>&1 && echo "    [OK] MSSQL driver installed"     || echo "    [WARN] MSSQL driver install returned non-zero - see /var/log/qlik-drivers-sqlserver.log"
 
     echo ""
     echo "==> [repagent] Applying systemd override (Type=forking, TimeoutStartSec=120)..."

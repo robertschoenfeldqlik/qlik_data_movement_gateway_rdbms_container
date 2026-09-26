@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Qlik Data Movement Gateway - Docker Deployment Script (Mac / Linux)
+# Qlik Data Movement Gateway - Docker / Podman Deployment Script (Mac / Linux)
 # Run this script from the directory containing your Dockerfile
-# Usage: ./deploy-qlik-dmg.sh
+# Usage: ./deploy-qlik-dmg.sh                    (Docker)
+#        ./deploy-qlik-dmg.sh --engine podman    (Podman)
+#        CONTAINER_ENGINE=podman ./deploy-qlik-dmg.sh
 # =============================================================================
 set -euo pipefail
 
@@ -42,17 +44,69 @@ write_dim() {
     echo -e "\033[90m    $1\033[0m"
 }
 
+# -- Container Engine ---------------------------------------------------------
+ENGINE="${CONTAINER_ENGINE:-docker}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --engine)
+            [[ $# -ge 2 ]] || write_fail "--engine needs a value: docker or podman"
+            ENGINE="$2"; shift 2 ;;
+        --engine=*)
+            ENGINE="${1#*=}"; shift ;;
+        -h|--help)
+            echo "Usage: $0 [--engine docker|podman]"; exit 0 ;;
+        *)
+            write_fail "Unknown option: $1 (usage: $0 [--engine docker|podman])" ;;
+    esac
+done
+
+ENGINE="$(echo "$ENGINE" | tr '[:upper:]' '[:lower:]')"
+case "$ENGINE" in
+    docker) ENGINE_LABEL="Docker"; ENGINE_VM="Docker Desktop" ;;
+    podman) ENGINE_LABEL="Podman"; ENGINE_VM="The Podman machine" ;;
+    *)      write_fail "Unsupported container engine '$ENGINE' - use docker or podman." ;;
+esac
+
+# Podman stores locally built images under localhost/ - reference it explicitly so
+# a same-named image pulled or built elsewhere (docker.io/library/...) never wins.
+if [[ "$ENGINE" == "podman" ]]; then
+    IMAGE_REF="localhost/${IMAGE_NAME}:${IMAGE_TAG}"
+    SYSTEMD_ARGS=(--systemd=always)     # Podman runs systemd as PID 1 natively
+else
+    IMAGE_REF="${IMAGE_NAME}:${IMAGE_TAG}"
+    SYSTEMD_ARGS=(--cgroupns=host)      # Docker needs the host cgroup namespace for systemd
+fi
+
 # -- Preflight Checks ---------------------------------------------------------
 write_step "Running preflight checks..."
+write_dim "Container engine: $ENGINE_LABEL"
 
-if ! command -v docker &>/dev/null; then
-    write_fail "Docker is not installed or not in PATH. Please install Docker Desktop."
-fi
+if [[ "$ENGINE" == "podman" ]]; then
+    if ! command -v podman &>/dev/null; then
+        write_fail "Podman is not installed or not in PATH. Please install Podman (podman.io)."
+    fi
 
-if ! docker info &>/dev/null; then
-    write_fail "Docker daemon is not running. Please start Docker Desktop and try again."
+    if ! podman info &>/dev/null; then
+        write_fail "Podman is not reachable. On Mac start the Podman machine (podman machine start) and try again."
+    fi
+
+    # systemd as PID 1 + ports 22/80/443 were validated on rootful Podman
+    if [[ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" == "true" ]]; then
+        write_warn "WARNING: Podman is running rootless. This container is validated on rootful Podman."
+        write_warn "         Linux: re-run with sudo. Mac: podman machine stop; podman machine set --rootful; podman machine start"
+    fi
+    write_success "Podman is running."
+else
+    if ! command -v docker &>/dev/null; then
+        write_fail "Docker is not installed or not in PATH. Please install Docker Desktop."
+    fi
+
+    if ! docker info &>/dev/null; then
+        write_fail "Docker daemon is not running. Please start Docker Desktop and try again."
+    fi
+    write_success "Docker is running."
 fi
-write_success "Docker is running."
 
 if [[ ! -f "./Dockerfile" ]]; then
     write_fail "Dockerfile not found in the current directory: $(pwd)"
@@ -155,8 +209,8 @@ PORTS=(
 OS_TYPE="$(uname -s)"
 
 if [[ "$OS_TYPE" == "Darwin" ]]; then
-    # macOS - Docker Desktop handles port mapping via its VM; no host firewall changes needed
-    write_dim "macOS detected. Docker Desktop manages port forwarding through its VM."
+    # macOS - Docker Desktop / the Podman machine handles port mapping via its VM; no host firewall changes needed
+    write_dim "macOS detected. ${ENGINE_VM} manages port forwarding through its VM."
     write_dim "No host firewall changes required. If you use a third-party firewall, ensure these ports are allowed:"
     for entry in "${PORTS[@]}"; do
         port="${entry%%:*}"
@@ -211,30 +265,30 @@ fi
 # -- Remove Existing Container ------------------------------------------------
 write_step "Checking for existing container named '$CONTAINER_NAME'..."
 
-EXISTING=$(docker ps -aq --filter "name=^${CONTAINER_NAME}$")
+EXISTING=$("$ENGINE" ps -aq --filter "name=^${CONTAINER_NAME}$")
 if [[ -n "$EXISTING" ]]; then
     write_warn "Found existing container. Stopping and removing..."
-    docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    "$ENGINE" stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    "$ENGINE" rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
     write_success "Existing container removed."
 else
     write_success "No existing container found."
 fi
 
 # -- Build Image --------------------------------------------------------------
-write_step "Building Docker image '${IMAGE_NAME}:${IMAGE_TAG}'..."
+write_step "Building ${ENGINE_LABEL} image '${IMAGE_NAME}:${IMAGE_TAG}'..."
 
-if ! docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .; then
-    write_fail "Docker build failed. Check the output above for errors."
+if ! "$ENGINE" build -t "${IMAGE_NAME}:${IMAGE_TAG}" .; then
+    write_fail "${ENGINE_LABEL} build failed. Check the output above for errors."
 fi
 write_success "Image built successfully."
 
 # -- Create Named Volume ------------------------------------------------------
 write_step "Ensuring MySQL data volume '$MYSQL_VOLUME' exists..."
 
-VOLUME_EXISTS=$(docker volume ls --filter "name=^${MYSQL_VOLUME}$" --format "{{.Name}}")
+VOLUME_EXISTS=$("$ENGINE" volume ls --filter "name=^${MYSQL_VOLUME}$" --format "{{.Name}}")
 if [[ -z "$VOLUME_EXISTS" ]]; then
-    docker volume create "$MYSQL_VOLUME" >/dev/null
+    "$ENGINE" volume create "$MYSQL_VOLUME" >/dev/null
     write_success "Volume '$MYSQL_VOLUME' created."
 else
     write_success "Volume '$MYSQL_VOLUME' already exists - existing MySQL data will be preserved."
@@ -244,10 +298,10 @@ fi
 write_step "Starting container '$CONTAINER_NAME'..."
 write_dim "NOTE: --memory=4g is required for SQL Server 2022 to start."
 
-if ! docker run -d \
+if ! "$ENGINE" run -d \
     --name "$CONTAINER_NAME" \
     --privileged \
-    --cgroupns=host \
+    "${SYSTEMD_ARGS[@]}" \
     --memory=4g \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
     -v "${MYSQL_VOLUME}:/var/lib/mysql" \
@@ -262,41 +316,41 @@ if ! docker run -d \
     -p 8080:8080 \
     -p 8088:8088 \
     -p 8686:8686 \
-    "${IMAGE_NAME}:${IMAGE_TAG}"; then
+    "$IMAGE_REF"; then
     write_fail "Failed to start container. Check the output above for errors."
 fi
 write_success "Container '$CONTAINER_NAME' started successfully."
 
 # -- Status Summary -----------------------------------------------------------
 write_step "Deployment complete. Container status:"
-docker ps --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+"$ENGINE" ps --filter "name=^${CONTAINER_NAME}$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
 echo ""
 echo -e "\033[90m-- Initialization Logs -----------------------------------------------\033[0m"
 write_warn "Streaming container initialization logs (Ctrl+C to stop)..."
 echo ""
-docker exec -it "$CONTAINER_NAME" journalctl -u qlik-dmg-init.service -f || true
+"$ENGINE" exec -it "$CONTAINER_NAME" journalctl -u qlik-dmg-init.service -f || true
 
 echo ""
 echo -e "\033[90m-- Connection Details -----------------------------------------------\033[0m"
-write_dim "MySQL        : localhost:3306  (root / Qlik1234)"
+write_dim "MySQL        : localhost:3306  (root / Qlik1234)  databases: churn, crm"
 write_dim "PostgreSQL   : localhost:5432  (postgres / Qlik1234)"
 write_dim "SQL Server   : localhost:1433  (sa / Qlik1234!)"
 write_dim "Qlik Tenant  : $TENANT_URL"
 echo ""
 echo -e "\033[90m-- Useful Commands --------------------------------------------------\033[0m"
-write_dim "Tail logs:        docker logs -f $CONTAINER_NAME"
-write_dim "Open shell:       docker exec -it $CONTAINER_NAME /bin/bash"
-write_dim "MSSQL logs:       docker exec -it $CONTAINER_NAME journalctl -u mssql-server -f"
-write_dim "Fix repagent:     docker exec -it $CONTAINER_NAME bash -c \"mkdir -p /etc/systemd/system/repagent.service.d && cat > /etc/systemd/system/repagent.service.d/override.conf << 'EOF'
+write_dim "Tail logs:        $ENGINE logs -f $CONTAINER_NAME"
+write_dim "Open shell:       $ENGINE exec -it $CONTAINER_NAME /bin/bash"
+write_dim "MSSQL logs:       $ENGINE exec -it $CONTAINER_NAME journalctl -u mssql-server -f"
+write_dim "Fix repagent:     $ENGINE exec -it $CONTAINER_NAME bash -c \"mkdir -p /etc/systemd/system/repagent.service.d && cat > /etc/systemd/system/repagent.service.d/override.conf << 'EOF'
 [Service]
 PIDFile=
 Type=forking
 TimeoutStartSec=120
 EOF
 systemctl daemon-reload && systemctl restart repagent\""
-write_dim "Stop container:   docker stop $CONTAINER_NAME"
-write_dim "Remove container: docker rm $CONTAINER_NAME"
-write_dim "Remove volume:    docker volume rm $MYSQL_VOLUME"
+write_dim "Stop container:   $ENGINE stop $CONTAINER_NAME"
+write_dim "Remove container: $ENGINE rm $CONTAINER_NAME"
+write_dim "Remove volume:    $ENGINE volume rm $MYSQL_VOLUME"
 echo -e "\033[90m---------------------------------------------------------------------\033[0m"
 echo ""
