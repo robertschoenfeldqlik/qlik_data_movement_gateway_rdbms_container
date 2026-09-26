@@ -238,8 +238,15 @@ TimeoutStartSec=120
 OVERRIDE
     systemctl daemon-reload
 
-    echo "==> [repagent] Starting service..."
+    # Generate the registration key (and the gateway's private key) BEFORE the
+    # service starts - Qlik's documented order. Started first, repagent finds no
+    # private key, logs "Private key is not configured" and stops its components.
+    echo "==> [Gateway] Retrieving registration token..."
     cd /opt/qlik/gateway/movement/bin/
+    REGISTRATION_JSON=$(./agentctl qcs get_registration 2>&1)
+    REGISTRATION_EXIT=$?
+
+    echo "==> [repagent] Starting service..."
     systemctl start repagent
     systemctl enable repagent
     systemctl status repagent --no-pager
@@ -255,10 +262,6 @@ OVERRIDE
             break
         fi
     done
-
-    echo "==> [Gateway] Retrieving registration token..."
-    REGISTRATION_JSON=$(./agentctl qcs get_registration 2>&1)
-    REGISTRATION_EXIT=$?
 else
     echo "==> [Gateway] WARNING: Gateway not installed - skipping agentctl and driver steps."
 fi
