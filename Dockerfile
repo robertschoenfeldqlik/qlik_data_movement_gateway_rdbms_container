@@ -118,6 +118,22 @@ RUN yum install -y \
         https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm && \
     yum clean all
 
+# PGDG now templates its URLs as rhel-$releasever_major.$releasever_minor-
+# $basearch. Oracle Linux 9 leaves $releasever_minor empty, so pgdg-common
+# resolves to .../common/redhat/rhel-9.-x86_64/repodata/repomd.xml — note the
+# stray dot — which 404s and fails the install below.
+#
+# Rewrite the whole major.minor pair to a literal 9. Do NOT sed $releasever on
+# its own: it is a prefix of $releasever_major, so a global replace turns the
+# URL into rhel-9_major.9_minor- and breaks it differently.
+#
+# Two guards, both of which can fail the build here rather than twenty layers
+# later with another unexplained 404: no baseurl may still carry the broken
+# variable, and at least one must carry the rewritten path.
+RUN sed -i 's|rhel-\$releasever_major\.\$releasever_minor-|rhel-9-|g' /etc/yum.repos.d/pgdg-*.repo && \
+    ! grep -q '^baseurl=.*releasever_minor' /etc/yum.repos.d/pgdg-*.repo && \
+    grep -q '^baseurl=.*rhel-9-' /etc/yum.repos.d/pgdg-*.repo
+
 RUN yum install -y \
         postgresql15-server \
         postgresql15 \
