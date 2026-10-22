@@ -32,9 +32,13 @@ MySQL is preconfigured with binary logging enabled (ROW format) for CDC replicat
 The Gateway RPM (`qlik-data-gateway-data-movement.rpm`) is not included in this repository and must be downloaded separately.
 
 **Download from GitHub releases:**
-> https://github.com/qlik-download/saas-download-links/releases
+> https://github.com/qlik-download/hdd-replication-agent-artifacts/releases
 
-Look for the file named `qlik-data-gateway-data-movement.rpm` in the latest release assets.
+Tested version: **2026.5.37** (`qlik-data-gateway-data-movement-2026.5-37.x86_64.rpm`):
+
+```
+https://github.com/qlik-download/hdd-replication-agent-artifacts/releases/download/v2026.5.37/qlik-data-gateway-data-movement-2026.5-37.x86_64.rpm
+```
 
 After downloading, rename the file to `gateway.rpm` and place it in the `rpmfiles/` directory:
 
